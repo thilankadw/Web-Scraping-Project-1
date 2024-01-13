@@ -1,0 +1,163 @@
+# Define your item pipelines here
+#
+# Don't forget to add your pipeline to the ITEM_PIPELINES setting
+# See: https://docs.scrapy.org/en/latest/topics/item-pipeline.html
+
+
+# useful for handling different item types with a single interface
+from itemadapter import ItemAdapter
+import mysql.connector
+from mysql.connector import errorcode
+
+class BookscraperPipeline:
+    def process_item(self, item, spider):
+
+        adapter = ItemAdapter(item)
+
+        ##strip all whitespace from string
+        field_names = adapter.field_names()
+        for field_name in field_names:
+            if field_name != 'description':
+                value =  adapter.get(field_name)
+                adapter[field_name] = value[0].strip()
+
+        ##category and product type --> switch to lowercase
+        lowercase_keys = ['category', 'product_type']
+        for lowercase_key in lowercase_keys:
+            value = adapter.get(lowercase_key)
+            adapter[lowercase_key] = value.lower()
+
+        ##price --> convert to float
+        price_keys = ['price', 'price_excl_tax', 'price_incl_tax', 'tax']
+        for price_key in price_keys:
+            value = adapter.get(price_key)
+            value = value.replace('£', '')
+            adapter[price_key] = float(value)
+
+        ##availability --> extract number of books in stock
+        availability_string = adapter.get('availability')
+        split_string_array =  availability_string.split('(')
+        if len(split_string_array) < 2:
+            adapter['availability'] = 0
+        else:
+            availability_array = split_string_array[1].split(' ')
+            adapter['availability'] = int(availability_array[0])
+
+        ##reviews --> convert string to number
+        num_reviews_string = adapter.get('num_reviews')
+        adapter['num_reviews'] = int(num_reviews_string)
+
+        ##stars --> convert text to number
+        stars_string =  adapter.get('stars')
+        split_stars_array = stars_string.split(' ')
+        stars_text_value = split_stars_array[1].lower()
+        if stars_text_value == "zero":
+            adapter['stars'] = 0
+        elif stars_text_value == "one":
+            adapter['stars'] = 1
+        elif stars_text_value == "two":
+            adapter['stars'] = 2
+        elif stars_text_value == "three":
+            adapter['stars'] = 3
+        elif stars_text_value == "four":
+            adapter['stars'] = 4
+        elif stars_text_value == "five":
+            adapter['stars'] = 5
+
+        return item
+
+class SaveToMySQLPipeLine:
+
+    def __init__(self):
+        try:
+            self.conn = mysql.connector.connect(
+                user='', 
+                password='',
+                host='',
+                database=''
+            )
+        except mysql.connector.Error as err:
+            if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+                print("Something is wrong with your user name or password")
+            elif err.errno == errorcode.ER_BAD_DB_ERROR:
+                print("Database does not exist")
+            else:
+                print(err)
+
+        ##create cursor, used to execute commands
+        self.cur = self.conn.cursor()
+
+        ##create books table if not exists
+        self.cur.execute("""
+                            create table if not exists firsttutorial(
+                                id int NOT NULL auto_increment,
+                                url VARCHAR(255),
+                                title text,
+                                product_type VARCHAR(255),
+                                price_excl_tax DECIMAL,                
+                                price_incl_tax DECIMAL,
+                                tax DECIMAL,                  
+                                price DECIMAL,  
+                                availability int,
+                                num_reviews int,
+                                stars int,
+                                category VARCHAR(50),        
+                                description text,
+                                PRIMARY KEY (id)
+                            )
+                        """)
+        
+    def process_item(self, item, spider):
+
+        ##define insert statement
+        self.cur.execute("""
+                            insert into firsttutorial (
+                                url,
+                                title,
+                                product_type,
+                                price_excl_tax,                
+                                price_incl_tax,
+                                tax,                  
+                                price, 
+                                availability,
+                                num_reviews,
+                                stars,
+                                category,        
+                                description
+                            ) values (
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s
+                            )""", (
+                                item["url"],
+                                item["title"],
+                                item["product_type"],
+                                item["price_excl_tax"],
+                                item["price_incl_tax"],
+                                item["tax"],
+                                item["price"],
+                                item["availability"],
+                                item["num_reviews"],
+                                item["stars"],
+                                item["category"],
+                                item["description"][0],
+                            ))
+        
+        ##execute insert of data into databse
+        self.conn.commit()
+        return item
+    
+    def close_spider(self, spider):
+
+        ##close cursor and connection to db
+        self.cur.close()
+        self.conn.close()
